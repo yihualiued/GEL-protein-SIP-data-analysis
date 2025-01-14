@@ -1,1 +1,3 @@
 # GEL-protein-SIP-data-analysis
+Statistical analysis and plotting of protein SIP results of 13C and 15N labelled microbial mats from Lake Goodenough, Canada  
+Calis-p 3.0.13 ([https://sourceforge.net/projects/calis-p/](https://github.com/kinestetika/Calisp)) was used to resolve the 13C and 15N isotope labels in metaproteome. Scripts in this repository wrangle and process the Calisp outputs in batches, calculate the isotope ratio of a MAG or a sample from the isotope ratio of peptides, make comparisons with bulk isotope ratio from IRMS (Flow-Elemental Analysis-Isotope Ratio Mass Spectrometry), calculate the structure of the microbial communities, and check the abundance correlation of microbes of interest within the community. 
