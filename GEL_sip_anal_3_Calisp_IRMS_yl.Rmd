@@ -1,0 +1,600 @@
+---
+title: "sodalake-sip Calisp vs IRMS"
+output:
+  html_document:
+    df_print: paged
+---
+
+R markdown using calisp.py output. Importing and wrangling of feather data adapted form MS python jupyter notebook.
+Here we want to compare the bulk isotope ratio change per sample between calculated from total protein (Calis-p) and measured from whole biomass (IRMS)
+
+Difference from the old R script: bypass bin level, directly get the sample isotope ratio from the median of peptides isotope ratio
+
+# Load libraries and basic settings
+
+Setup working directory
+```{r setup, include=FALSE}
+# setup chuck to make working directory set for all chunks
+wd = "/yihualiu/mscalisp/"
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = wd)
+```
+
+Load libraries
+
+```{r}
+library("stringr")
+library("ggplot2")
+library("tidyr")
+library("dplyr")
+library("readr")
+library("RColorBrewer")
+library("tidytable")
+library("Hmisc")
+library("svglite")
+```
+
+## Input Parameters
+First choice from N (15N) and C (13C)
+
+The input wrangeled files for 13C are in "./GEL_C/wrangeled_output", for 15N are in "./GEL_N/wrangeled_output"
+
+Also specify other parameters
+```{r}
+la = "C"                                              # specify the isotope label, "C" for 13C and "N" for 15N # nolint
+# la = "N"
+
+sodataxo_dir = str_c(wd,"Soda lake MAGs short taxonomy.csv")   # directory of reference file with bin taxonomic annotation
+irmsfile = str_c(wd,"2019_IRMS.csv")                  # specify the IRMS file name/directory
+binls = c("bin25_GEM2", "bin31_GEM2", "bin17_LCM1")   # specify the bins to address when visualizing peptide isotope ratio distribution
+
+```
+
+Generate the other variables depends on C or N
+```{r}
+# wrangeled calisp data dir
+  wrangeled_data_dir = str_c("GEL_",la,"/wrangled_output/")
+# output dir
+outroot = str_c("GEL_",la,"/analysis_", Sys.Date(),"/")
+  dir.create(outroot)
+outIRMS = str_c(outroot, "IRMS_Calisp/")
+  dir.create(outIRMS)
+```
+
+## Import dataset
+
+```{r}
+data_all = read_csv(str_c(wrangeled_data_dir,"calisp_out_good_peptides.csv"))
+data_unique = read_csv(str_c(wrangeled_data_dir,"calisp_out_unique_peptides.csv"))
+```
+
+# Calculate the protein-based isotope ratio of sample
+## Sample peptide isotope distribution
+First, have a look at the isotope ratio distribution of peptides from each sample.
+
+This is similar to GEL_sip_anal_2, but here we plot at level of sample, and explore the impact of two approaches 
+in GEL_sip_anal_1 to assign peptides that mapped to a cluster of multiple proteins and bins.
+
+Here are the two ways:
+  1. DIscard all peptides that mapped to more than one proteins or bins in a sample (data_unique)
+  2. Keep the peptides that maps to multiple bins, since this does not impact the bulk analysis on sample level (data_all)
+
+We use the same output directory as in GEL_sip_anal_2, and create the directory if it does not exist.
+```{r}
+# create a directory for peptide distribution
+boxdir = str_c(outroot, "/peptide_distribution/")
+dir.create(boxdir)
+```
+
+### Functions to process data and create plot boxplots
+```{r}
+weighted_box_stats = function(data){
+  data%>%
+  select(sample_ID, exp, hour, control, pattern_total_intensity, ratio_na) %>%
+  # Assign sample_ID "" to 
+  group_by(sample_ID, exp, hour, control) %>%
+  summarise(minRo = min(ratio_na),
+            y25 = wtd.quantile(ratio_na, weights = pattern_total_intensity, probs = 0.25),
+            y50 = wtd.quantile(ratio_na, weights = pattern_total_intensity, probs = 0.5),
+            y75 = wtd.quantile(ratio_na, weights = pattern_total_intensity, probs = 0.75),
+            maxRo = max(ratio_na)) %>%
+  # Note: in geom_boxplot, ymin is not the min number of y, but  
+  #  "smallest observation greater than or equal to lower hinge (q1) - 1.5 * IQR"
+  # where IQR ( inter-quartile range) = q3-q1
+  # here instead, the following code use min of y or q1 - 1.5*IQR, whichever greater
+  # similarly, ymax = max of y or q3 + 1.5*IQR, whichever smaller
+  mutate(yIQR = y75 - y25) %>%
+  mutate(y0 = ifelse(y25 - 1.5 * yIQR > minRo, y25 - 1.5 * yIQR, minRo),
+         y100 = ifelse(y75 + 1.5 * yIQR < maxRo, y75 + 1.5 * yIQR, maxRo),
+         hour = as.numeric(hour)) %>% 
+  mutate(exp = ifelse(sample_ID == "TI1", "Initial_1", 
+                  ifelse(sample_ID == "TI2", "Initial_2", exp)))
+  # Note: I found there is a ploting bug if I merge the above two mutate() into one, but I don't know why
+}
+
+unweighted_box_stats = function(data){
+  data %>%
+  select(sample_ID, exp, hour, control, pattern_total_intensity, ratio_na) %>%
+  group_by(sample_ID, exp, hour, control) %>%
+  summarise(minRo = min(ratio_na),
+            y25 = wtd.quantile(ratio_na, probs = 0.25),
+            y50 = wtd.quantile(ratio_na, probs = 0.5),
+            y75 = wtd.quantile(ratio_na, probs = 0.75),
+            maxRo = max(ratio_na)) %>%
+  # Note: in geom_boxplot, ymin is not the min number of y, but  
+  #  "smallest observation greater than or equal to lower hinge (q1) - 1.5 * IQR"
+  # where IQR ( inter-quartile range) = q3-q1
+  # here instead, the following code use min of y or q1 - 1.5*IQR, whichever greater
+  # similarly, ymax = max of y or q3 + 1.5*IQR, whichever smaller
+  mutate(yIQR = y75 - y25) %>%
+  mutate(y0 = ifelse(y25 - 1.5 * yIQR > minRo, y25 - 1.5 * yIQR, minRo),
+         y100 = ifelse(y75 + 1.5 * yIQR < maxRo, y75 + 1.5 * yIQR, maxRo),
+         hour = as.numeric(hour)) %>% 
+  mutate(exp = ifelse(sample_ID == "TI1", "Initial_1", 
+                  ifelse(sample_ID == "TI2", "Initial_2", exp)))
+}
+
+
+# function to plot manually calculated stats
+box_manual = function(stats, weight ="Un", uniquepep = 0, title_prfx =""){
+# testing data
+# stats = t1 %>%
+#     mutate(hour = as.numeric(hour))%>%
+#   mutate(exp = ifelse(sample_ID == "TI1", "Initial_1", 
+#                   ifelse(sample_ID == "TI2", "Initial_2", exp)))
+# weight = "Un"
+# uniquepep = 0
+
+  # sample info shown in plot title
+  sampleinfo = ifelse(uniquepep, "from all unique peptides", "from all good quality peptides")
+
+  # calculate the blank quantiles' average over time, as reference lines to show on the diagram
+  blk <- stats %>%
+    filter(control == TRUE) 
+
+  y25ave = mean(blk$y25)
+  y50ave = mean(blk$y50)
+  y75ave = mean(blk$y75)
+
+  # plot
+  if (la == "C") {
+    stats %>% 
+    # t1 %>%
+    # mutate(hour = as.numeric(hour))%>%
+    # mutate(exp = ifelse(sample_ID == "TI1", "Initial_1", 
+    #               ifelse(sample_ID == "TI2", "Initial_2", exp))) %>%
+    # filter(exp != "Initial_1") %>%
+    ggplot(., aes(hour, group = hour)) +
+    geom_boxplot(aes(x= hour, 
+                     ymin = y0, 
+                     lower = y25, middle = y50, upper = y75, ymax = y100, 
+                     fill = exp), alpha = 0.8,
+                 stat = "identity")+
+    facet_grid(~exp) +
+
+    scale_fill_manual(values = c("Blank" = "#59a9eb", "Carbon" = "#25c450"))+
+    ylim(0.5, 1.5)+
+    ylab( str_c("Peptide 13C/12C (%) per sample"))+
+    theme_bw()+
+    #Add lines for the mean y75, mean y75 and mean y50 of blank, values were calculated externally
+    geom_hline(aes(yintercept = y75ave), linetype = 1, color = "#949494")+
+    geom_hline(aes(yintercept = y25ave), linetype = 1, color = "#949494")+
+    geom_hline(aes(yintercept = y50ave), linetype = 2, color = "#949494")+
+    labs(title = str_c(title_prfx,weight,"weighted C isotope distribution, ",sampleinfo))
+  } else {
+   stats %>% 
+      ggplot(., aes(hour, group = hour)) +
+      geom_boxplot(aes(x= hour, 
+                       ymin = y0, 
+                       lower = y25, middle = y50, upper = y75, ymax = y100, 
+                       fill = exp), alpha = 0.8,
+                   stat = "identity")+
+      facet_grid(~exp)+
+      scale_fill_manual(values = c("Blank" = "#59a9eb", "Carbon" = "#25c450", "Ammo" = "#c2083c", "Urea" = "#ffcd00", "N2" = "#e0c4ad"))+
+      ylim(-1.5, 2)+
+      ylab( str_c(" Protein 15N/14N (%) per sample"))+
+      theme_bw()+
+      #Add lines for the mean y75, mean y75 and mean y50 of blank, values were calculated externally
+      geom_hline(aes(yintercept = y75ave), linetype = 1, color = "#949494")+
+      geom_hline(aes(yintercept = y25ave), linetype = 1, color = "#949494")+
+      geom_hline(aes(yintercept = y50ave), linetype = 2, color = "#949494")+
+    labs(title = str_c(title_prfx, weight,"weighted N isotope distribution, ",sampleinfo))
+  }
+}
+
+# function to save the plots
+box_save = function(MAG="", weight ="Un", uniquepep = 0){
+  # sample info shown in saved plot file name
+  sampleinfo_filename = ifelse(uniquepep, "unique_pep", "all_pep")
+  
+  s = ifelse(MAG == "","","_")
+  
+   ggsave(str_c(boxdir,MAG,s,la,"_",weight,"weighted_na_ratio_",sampleinfo_filename,"_2019GEL.svg"), plot= last_plot(), device = "svg", width = 8, height = 8.5, units = "in")
+   ggsave(str_c(boxdir,MAG,s,la,"_",weight,"weighted_na_ratio_",sampleinfo_filename,"_2019GEL.png"), plot= last_plot(), device = "png", width = 8, height = 8.5, units = "in")
+}
+
+```
+
+### Plotting
+All good quality protein, unweighted
+```{r}
+data_all %>%
+  unweighted_box_stats() %>%
+  box_manual()
+```
+
+```{r}
+box_save()
+```
+
+All good quality peptides, pattern_total_intensity weighted
+```{r}
+data_all %>%
+  weighted_box_stats() %>%
+  box_manual(., "Pattern intensity ")
+```
+
+```{r}
+box_save(weight = "")
+```
+
+Only peptides that maps to one protein (unique peptides), unweighted
+```{r}
+data_unique %>%
+  unweighted_box_stats() %>%
+  box_manual(., ,uniquepep = 1)
+```
+
+```{r}
+box_save(uniquepep = 1)
+```
+Only peptides that maps to one protein (unique peptides), pattern_total_intensity weighted
+```{r}
+data_unique %>%
+  weighted_box_stats() %>%
+  box_manual(., "Pattern intensity ",uniquepep = 1)
+```
+
+```{r}
+box_save(weight = "", uniquepep = 1)
+```
+
+Loop to plot for selected MAGs
+
+```{r}
+for (bin in binls) {
+  df_plot = data_unique %>%
+    filter(bins == bin) 
+  # Unweighted
+  df_plot %>%
+    unweighted_box_stats() %>%
+    box_manual(., ,uniquepep = 1, title_prfx = str_c(bin, " "))  
+  
+  box_save(MAG=bin, weight = "Un", uniquepep = 1)
+  
+  # Pattern intensity Weighted
+  df_plot %>%
+    weighted_box_stats() %>%
+    box_manual(., "Pattern intensity ",uniquepep = 1, title_prfx = str_c(bin, " "))
+  
+  box_save(MAG=bin, weight = "", uniquepep = 1)
+}
+```
+
+# Sample IRMS isotope ratio
+load IRMS measured C isotope ratio for each sample
+
+```{r}
+# read IRMS data
+irms <- read_csv(irmsfile) %>%
+  replace(.=="TI","0") %>%
+  replace(.=="Blk", "Blank") %>%
+  replace(.=="Uni", "Blank")%>%
+  replace(.=="Cab", "Carbon")%>%
+  replace(.=="Nit", "N2")%>%
+  replace(.=="Ure", "Urea") %>%
+  replace(.=="Amo", "Ammo") %>%
+  # 20200412
+  # Convert IRMS delta to ratio, note std used came from Calis-p but not IRMS
+  # C VPDB standard 13C/12C = 0.0111802 in Isodat software
+  # 15N/14N = 0.003676433/0.996323567
+  mutate(Ratio_13C = (d13C_IRMS/1000 + 1)* 0.0111802,
+         exp = Label,
+         Ratio_15N = (d15N_IRMS/1000 + 1)* 0.003676433/0.996323567,
+         Time = as.integer(Time)) %>%
+  select(-Label)
+
+#only carbon or nitrogen samples
+if(la == "C"){
+  irms_la <- irms %>%
+    filter(exp %in% c("Blank", "Carbon")) %>%
+    select(-c(d15N_IRMS, Npct, Ratio_15N)) %>%
+    rename(time = Time, hours = Hours, rep = Rep, delta_irms = d13C_IRMS, ratio_irms = Ratio_13C)
+} else {
+  irms_la <- irms %>%
+    filter(exp %in% c("Blank", "N2", "Urea", "Ammo")) %>%
+    select(-c(d13C_IRMS, Cpct, Ratio_13C)) %>%
+  rename(time = Time, hours = Hours, rep = Rep, delta_irms = d15N_IRMS, ratio_irms = Ratio_15N)
+}
+```
+
+
+## Sample peptide vs IRMS isotope ratio
+Calculate the isotope ratio of sample from the median of the isotope ratio of peptides
+From:
+  1. Same filtering criteria as the one used to plot peptide ratio (data_unique)
+  2. data_unique + peptides that maps to multiple bins, since this does not impact the bulk analysis on sample level (data_all)
+
+Prepare library and functions
+```{r}
+# limma library for weighted median
+library(limma)
+
+# function to calculate median sample calisp na ratio and join with irms
+ra_join = function(calispdf, irmsdf){
+  calispdf %>%
+      # get median peptide ratio as sample ratio. Use median and pattern_total_intensity weighted median
+    summarise(ratio_na = median(ratio_na), ratio_na.weight = weighted.median(ratio_na, pattern_total_intensity),.by = c(sample_ID, control)) %>%
+    # join irms and Calisp results
+    # Also assign t0 blank calisp value to TI samples (use the "Sample_ID" from irms)
+    full_join(., irmsdf, by = "sample_ID") %>%
+    # assign "TI" to the time of TI1 and TI2
+    mutate(time = as.character(time))%>%
+    mutate(time = ifelse(sample_ID %in% c("TI1","TI2"),"TI",time))
+}
+
+
+```
+Get data from files and prepare table to plot
+```{r}
+# reload data from file
+data_all = read_csv(str_c(wrangeled_data_dir,"calisp_out_good_peptides.csv"))
+data_unique = read_csv(str_c(wrangeled_data_dir,"calisp_out_unique_peptides.csv"))
+
+# from data_all
+data_calispall_irms = ra_join(data_all, irms_la) %>%
+  mutate(uniq_pep = FALSE)
+# from data_unique
+data_calispunique_irms = ra_join(data_unique, irms_la) %>%
+  mutate(uniq_pep = TRUE)
+
+# combine to make one table to report
+data_calisp_irms = bind_rows(data_calispall_irms, data_calispunique_irms)
+
+write_csv(data_calisp_irms, str_c(outIRMS, "Calisp-IRMS.csv"))
+
+```
+
+Discard raw data to free up memory
+```{r}
+remove(data_raw, irms, irms_la, data_all, data_unique, data_calispall_irms, data_calispunique_irms)
+gc()
+```
+
+
+## Plot IRMS against Calis-p results
+Here we want to compare the bulk isotope ratio change per sample between calculated from total protein (Calis-p) and measured from whole biomass (IRMS)
+
+## Load data
+```{r}
+data_calisp_irms = read_csv(str_c(outIRMS, "Calisp-IRMS.csv"))
+```
+
+## 1. Unique peptides vs all peptides
+Take a look on how big the difference is, when calculating sample calisp na ratio from all peptides or just unique peptides  
+Create prefix for axis label depends on N or C
+```{r}
+if (la == 'C') {
+  a <- 13
+  b <- 12
+  # pref = expression(""^{13}*"C/"^{12}*"C ")
+} else {
+  a <- 15
+  b <- 14
+  # pref = expression(""^{15}*"N/"^{14}*"N ")
+}
+
+```
+
+```{r}
+data_calisp_irms %>%
+  ggplot()+
+  geom_point(aes(x= ratio_na, y = ratio_irms, color = uniq_pep), shape = 16,  size =5.4, alpha = 0.8) +
+  geom_text(aes(x= ratio_na, y = ratio_irms,label=time), color="White", size = 3.8)+
+  scale_color_discrete(breaks=c(TRUE,FALSE),
+                      labels=c("Unique peptides", "All good peptides"))+
+  facet_wrap(~exp, scales = "fixed")+
+  xlab(substitute("Protein "^{a}*la*"/"^{b}*la*" (Calis-p Protein-SIP)", list(a = a, b = b, la = la))) +
+  ylab(substitute("Total Biomass "^{a}*la*"/"^{b}*la*" (CF-EA-IRMS)", list(a = a, b = b, la = la)))+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.title = element_blank(), legend.position = "bottom")+
+  labs(title = substitute(""^{a}*la*"/"^{b}*la*" of bulk biomass and protein", list(a = a, b = b, la = la)))
+```
+Save the plot
+```{r}
+ggsave(str_c(outIRMS, "Calisp-IRMS_UNIvsALLpep.png"), width = 10, height = 5)
+ggsave(str_c(outIRMS, "Calisp-IRMS_UNIvsALLpep.svg"), device = "svg",width = 10, height = 5)
+```
+
+Show hours as color
+```{r}
+data_calisp_irms %>%
+  ggplot()+
+  geom_point(aes(x= ratio_na, y = ratio_irms, color = hours, shape = uniq_pep),  size =5.4, alpha = 0.6) +
+  geom_text(aes(x= ratio_na, y = ratio_irms,label=time), color="White", size = 3.8)+
+  scale_color_gradient(low="blue", high = "red", name = "Incubation\nHours")+
+  scale_shape_manual(breaks=c(TRUE,FALSE),
+                     name = substitute("Protein "^{a}*la*"/"^{b}*la*" From:", list(a = a, b = b, la = la)),
+                     values=c(15, 16),
+                     labels = c("Unique peptides", "All good peptides"))+
+  facet_wrap(~exp, scales = "fixed")+
+  xlab(substitute("Protein "^{13}*"C/"^{12}*"C (Calis-p Protein-SIP)", list(a = a, b = b, la = la)))+
+  ylab(substitute("Total Biomass "^{13}*"C/"^{12}*"C (CF-EA-IRMS)", list(a = a, b = b, la = la)))+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.position = "bottom")+
+  labs(title = substitute(""^{a}*la*"/"^{b}*la*" of bulk biomass and protein", list(a = a, b = b, la = la)))
+
+```
+```{r}
+# save the file
+ggsave(str_c(outIRMS,"IRMS-Calisp_UNIvsALLpep_hour-colored",".png"), plot = last_plot(), device = "png", width = 10, height = 6)
+ggsave(str_c(outIRMS,"IRMS-Calisp_UNIvsALLpep_hour-colored",".svg"), plot = last_plot(), device = "svg", width = 10, height = 6)
+
+```
+
+How about showing blank and carbon in one plot
+```{r}
+data_calisp_irms %>%
+  ggplot()+
+  geom_point(aes(x= ratio_na, y = ratio_irms, color = uniq_pep, shape = exp),  size =5.4, alpha = 0.8) +
+  geom_text(aes(x= ratio_na, y = ratio_irms,label=time), color="White", size = 3.8) +
+  xlab(substitute("Protein "^{a}*la*"/"^{b}*la*" (Calis-p Protein-SIP)", list(a = a, b = b, la = la)))+
+  ylab(substitute("Total Biomass "^{a}*la*"/"^{b}*la*" (CF-EA-IRMS)", list(a = a, b = b, la = la)))+
+  scale_shape_discrete(name="")+
+  scale_color_discrete(breaks=c(TRUE,FALSE),
+                       name = substitute("Protein "^{a}*la*"/"^{b}*la*" From:", list(a = a, b = b, la = la)),
+                      labels=c("Unique peptides", "All good quality peptides"))+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.position = "bottom")+
+  labs(title = substitute(""^{a}*la*"/"^{b}*la*" of bulk biomass and protein", list(a = a, b = b, la = la)))
+
+```
+```{r}
+# save the file
+ggsave(str_c(outIRMS,"IRMS-Calisp_UNIvsALLpep_NOfecet",".png"), plot = last_plot(), device = "png", width = 10, height = 6)
+ggsave(str_c(outIRMS,"IRMS-Calisp_UNIvsALLpep_NOfecet",".svg"), plot = last_plot(), device = "svg", width = 10, height = 6)
+```
+
+Now plot ratio_irms against hour, with Calisp ratio (ratio_na) from all good peptides as color gradient, fecet by exp
+```{r}
+data_calisp_irms %>%
+  filter(uniq_pep == FALSE) %>%
+  ggplot()+
+  geom_point(aes(x= hours, y = ratio_irms*100, color = ratio_na),  size =5.4, alpha = 0.8) +
+  geom_text(aes(x= hours, y = ratio_irms*100,label=time), color="White", size = 3.8) +
+  xlab("Incubation Hours")+
+  ylab(substitute("Total Biomass ("^{a}*la*"/"^{b}*la*")% (CF-EA-IRMS)", list(a = a, b = b, la = la)))+
+  scale_shape_discrete(name="")+
+  scale_color_gradient(low= "#5063f2", high = "#f7743b", name = substitute("Protein ("^{a}*la*"/"^{b}*la*")% (Calis-p Protein-SIP)", list(a = a, b = b, la = la)))+
+  facet_wrap(~exp, scales = "fixed")+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.position = "bottom")#+
+  # labs(title = substitute(""^{a}*la*"/"^{b}*la*" of bulk biomass and protein", list(a = a, b = b, la = la)))
+```
+```{r}
+# save the file
+ggsave(str_c(outIRMS,"IRMS-hour_allpep_Calisp-colored_fecet",".png"), plot = last_plot(), device = "png", width = 6, height = 4)
+ggsave(str_c(outIRMS,"IRMS-hour_allpep_Calisp-colored_fecet",".svg"), plot = last_plot(), device = "svg", width = 6, height = 4)
+```
+
+Now overlay the fecets, with grey color for "Blank" samples and color gradient for experiment samples
+
+```{r}
+ggplot()+
+  geom_point(data = data_calisp_irms %>% filter((uniq_pep == FALSE)&(exp == "Blank")), aes(x= hours, y = ratio_irms), color = "#4d4d4d",  size =5.4, alpha = 0.8)+
+  geom_point(data = data_calisp_irms %>% filter((uniq_pep == FALSE)&(exp != "Blank")), aes(x= hours, y = ratio_irms, color = ratio_na),  size =5.4, alpha = 0.8) +
+  scale_color_gradient(low= "#5063f2", high = "#f7743b", name = substitute("Protein "^{a}*la*"/"^{b}*la*" (Calis-p Protein-SIP), Blank is in black", list(a = a, b = b, la = la))) +
+  # geom_text(data = data_calisp_irms %>% filter((uniq_pep == FALSE)&(exp == "Blank")), aes(x= hours, y = ratio_irms,label=ratio_na), color="White", size = 3.8) +
+  # geom_text(data = data_calisp_irms %>% filter((uniq_pep == FALSE)&(exp == "Carbon")), aes(x= hours, y = ratio_irms,label=ratio_na), color="White", size = 3.8) + 
+  xlab("Incubation Hours")+
+  ylab(substitute("Total Biomass "^{a}*la*"/"^{b}*la*" (CF-EA-IRMS)", list(a = a, b = b, la = la)))+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.position = "bottom")+
+  labs(title = substitute(""^{a}*la*"/"^{b}*la*" of bulk biomass and protein", list(a = a, b = b, la = la)))
+```
+```{r}
+# save the file
+ggsave(str_c(outIRMS,"IRMS-hour_allpep_Calisp-colored_greyblk",".png"), plot = last_plot(), device = "png", width = 10, height = 6)
+ggsave(str_c(outIRMS,"IRMS-hour_allpep_Calisp-colored_greyblk",".svg"), plot = last_plot(), device = "svg", width = 10, height = 6)
+```
+
+With color for both blank and labeled
+```{r}
+ggplot() +
+  geom_point(data = data_calisp_irms %>% filter(uniq_pep == FALSE), aes(x= hours, y = ratio_irms, color = ratio_na, shape = exp),  size =5.4, alpha = 0.8) +
+  scale_color_gradient(low= "#5063f2", high = "#f7743b", name = substitute("Protein "^{a}*la*"/"^{b}*la*" (Calis-p Protein-SIP)", list(a = a, b = b, la = la))) +
+  scale_shape_discrete(name="")+
+  xlab("Incubation Hours")+
+  ylab(substitute("Total Biomass "^{a}*la*"/"^{b}*la*" (CF-EA-IRMS)", list(a = a, b = b, la = la)))+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.position = "bottom")+
+  labs(title = substitute(""^{a}*la*"/"^{b}*la*" of bulk biomass and protein", list(a = a, b = b, la = la)))
+```
+```{r}
+# save the file
+ggsave(str_c(outIRMS,"IRMS-hour_allpep_Calisp-colored",".png"), plot = last_plot(), device = "png", width = 10, height = 6)
+ggsave(str_c(outIRMS,"IRMS-hour_allpep_Calisp-colored",".svg"), plot = last_plot(), device = "svg", width = 10, height = 6)
+```
+
+
+## 2. Unweighted vs pattern intenstity weighted median ratio as sample protein ratio
+
+Make a long table for plot.
+
+Here only to plot "all good quality peptides"
+```{r}
+data_calisp_irms_weightlong = data_calisp_irms %>%
+  filter(uniq_pep == 0) %>%
+  pivot_longer(cols = c(ratio_na, ratio_na.weight),values_to = "ratio_calisp", names_to = "ratio_calisp_weight") %>%
+  mutate(ratio_calisp_weight = ifelse(ratio_calisp_weight == "ratio_na", "unweighted", "pattern intensity weighted"))
+```
+
+```{r}
+data_calisp_irms_weightlong %>%
+  ggplot(aes(y = ratio_irms, shape = exp))+
+  geom_point(aes(x= ratio_calisp, color = ratio_calisp_weight),size =5.4, alpha = 0.8) +
+  geom_text(aes(x= ratio_calisp,label=time), color="White", size = 3.8)+
+  xlab(substitute("Protein "^{a}*la*"/"^{b}*la*" (Calis-p Protein-SIP)", list(a = a, b = b, la = la)))+
+  ylab(substitute("Total Biomass "^{a}*la*"/"^{b}*la*" (CF-EA-IRMS)", list(a = a, b = b, la = la)))+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.title = element_blank(), legend.position = "bottom")
+```
+```{r}
+# save the file
+ggsave(str_c(outIRMS,"IRMS-Calisp_(un)weight",".png"), plot = last_plot(), device = "png", width = 10, height = 6)
+ggsave(str_c(outIRMS,"IRMS-Calisp_(un)weight",".svg"), plot = last_plot(), device = "svg", width = 10, height = 6)
+```
+
+Plot ratio_calisp against hour, with IRMS ratio (ratio_irms) from all good peptides as color gradient
+```{r}
+if (la == "C") {
+  data_calisp_irms_weightlong %>%
+  ggplot(aes(x = hours, y = ratio_calisp))+
+  geom_point(aes(color = ratio_irms, shape = ratio_calisp_weight),size = 5.4, alpha = 0.8) +
+  scale_shape_manual(values = c(15, 16), name="")+
+  scale_color_gradient(low= "#5063f2", high = "#f7743b", name = substitute("Total Biomass "^{a}*la*"/"^{b}*la*" (CF-EA-IRMS)", list(a = a, b = b, la = la))) +
+  xlab("Incubation Hours")+
+  ylab(substitute("Protein "^{a}*la*"/"^{b}*la*" (Calis-p Protein-SIP)", list(a = a, b = b, la = la)))+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.position = "right")+
+  labs(title = substitute(""^{a}*la*"/"^{b}*la*" of bulk biomass and protein", list(a = a, b = b, la = la))) +
+  # add seperate corrlation lines for unweighted and weighted group
+  geom_smooth(data = data_calisp_irms_weightlong %>% filter(ratio_calisp_weight == "unweighted"), method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  geom_smooth(data = data_calisp_irms_weightlong %>% filter(ratio_calisp_weight == "pattern intensity weighted"), method = "lm", se = FALSE, color = "black", linetype = "solid") +
+  # label the correlation lines
+  annotate("text", x = 35, y = 1.058, label = "unweighted", color = "black", size = 4) +
+  annotate("text", x = 35, y = 1.07, label = "pattern intensity weighted", color = "black", size = 4)
+} else {
+  data_calisp_irms_weightlong %>%
+  ggplot(aes(x = hours, y = ratio_calisp))+
+  geom_point(aes(color = ratio_irms, shape = ratio_calisp_weight),size = 5.4, alpha = 0.8) +
+  scale_shape_manual(values = c(15, 16), name="")+
+  scale_color_gradient(low= "#5063f2", high = "#f7743b", name = substitute("Total Biomass "^{a}*la*"/"^{b}*la*" (CF-EA-IRMS)", list(a = a, b = b, la = la))) +
+  xlab("Incubation Hours")+
+  ylab(substitute("Protein "^{a}*la*"/"^{b}*la*" (Calis-p Protein-SIP)", list(a = a, b = b, la = la)))+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank(), legend.position = "right")+
+  labs(title = substitute(""^{a}*la*"/"^{b}*la*" of bulk biomass and protein", list(a = a, b = b, la = la))) +
+  # add seperate corrlation lines for unweighted and weighted group
+  geom_smooth(data = data_calisp_irms_weightlong %>% filter(ratio_calisp_weight == "unweighted"), method = "lm", se = FALSE, color = "black", linetype = "dashed") +
+  geom_smooth(data = data_calisp_irms_weightlong %>% filter(ratio_calisp_weight == "pattern intensity weighted"), method = "lm", se = FALSE, color = "black", linetype = "solid") +
+  labs(caption = "Linear regression for unweighted(dash line) and weighted (solid line)")
+}
+
+  
+```
+```{r}
+# save the file
+ggsave(str_c(outIRMS,"Calisp-hour_IRMScolor_(un)weight",".png"), plot = last_plot(), device = "png", width = 10, height = 6)
+ggsave(str_c(outIRMS,"Calisp-hour_IRMScolor_(un)weight",".svg"), plot = last_plot(), device = "svg", width = 10, height = 6)
+```

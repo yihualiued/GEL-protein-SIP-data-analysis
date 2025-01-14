@@ -1,0 +1,252 @@
+---
+title: "GEL-sip RAW data wrangling"
+output:
+  html_document:
+    df_print: paged
+---
+
+R markdown using calisp.py output. Importing and wrangling of feather data adapted form MS python jupyter notebook.
+
+Here we prepare data in two ways in terms of assigning peptides that mapped to a cluster of multiple proteins and bins.
+
+  1. Same filtering criteria as the one used to plot peptide ratio (data_unique): unique_peptides.csv
+  2. Keep the peptides that maps to multiple bins, since this does not impact the bulk analysis on sample level (data_all): good_peptides.csv
+  
+
+## Load libraries and basic settings
+
+Setup working directory
+```{r setup, include=FALSE}
+# setup chuck to make working directory set for all chunks
+wd = "/yihualiu/mscalisp/"
+# setwd(wd)
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = wd)
+```
+
+Load libraries
+
+```{r}
+library("arrow")
+library("tidyverse")
+library("tidytable")
+```
+
+
+## Input Parameters
+
+First choice from N (15N) and C (13C), specify the taxonomic reference file and IRMS reference file. 
+
+The input feather files for 13C are in "./GEL_C/calisp_out", for 15N are in "./GEL_N/calisp_out"
+```{r}
+# la = "C"                                              # specify the isotope label, "C" for 13C and "N" for 15N
+la = "N"
+sodataxo_dir = str_c(wd,"Soda lake MAGs short taxonomy.csv")   # directory of reference file with bin taxonomic annotation
+irmsfile = str_c(wd,"2019_IRMS.csv")                  # specify the IRMS file name/directory
+```
+
+Then specify the filter applied to remove unwanted spectra (either NA, "fft", or "clumpy"), and threshold if required at "fft" or "clumpy".
+```{r}
+# Because the labeling is so slight, we can use the fft error to filter out contaminated spectra
+spectra_filter = "fft"
+spectra_filter_threshold = 0.0025
+```
+
+Generate the other variables depends on C or N
+
+```{r}
+if (la == "C") {
+  # calisp feather files dir
+  calisp_data_dir = "GEL_C/calisp_out/"
+  # output dir
+  outroot = str_c("GEL_C/wrangled_output/")
+  dir.create(outroot)
+  isolim = 2   # "2%" for C, "5.643%" for N     # specify the isotope ratio cutoff for Calis-p, defined by the isotope ratio of labelling chemicals, as biomass cannot get higher ratio than label.
+} else {
+  # calisp feather files dir
+  calisp_data_dir = "GEL_N/calisp_out/"
+  # output dir
+  outroot = str_c("GEL_N/wrangled_output/")
+  dir.create(outroot)
+  isolim = 5.643  
+}
+```
+
+## Import data and basic wrangling
+
+```{r}
+# acquire file list 
+
+data_raw = NULL
+for (f in list.files(calisp_data_dir, full.names = TRUE, pattern = "*.feather")) {
+  data_raw = bind_rows(data_raw, read_feather(f))}
+
+  # calculate deltas
+  # std used came from Calis-p 
+  # C VPDB standard 13C/12C = 0.011056585166521 / 0.988943414833479 
+  # 15N/14N = 0.366/99.634 (https://ciaaw.org/nitrogen-references.htm#:~:text=Nitrogen%20Isotope%20Materials,of%20zero%20by%20international%20agreement.; https://doi.org/10.1515/pac-2013-1023)
+ 
+if (la == "C") {
+  data_raw = data_raw %>%
+    mutate(., delta_na = (ratio_na / (0.011056585166521 / 0.988943414833479)-1)*1000,
+               delta_fft = (ratio_fft / (0.011056585166521 / 0.988943414833479)-1)*1000)
+} else {
+  data_raw = data_raw %>%  
+    mutate(., delta_na = (ratio_na / (0.00366/0.99634)-1)*1000,
+              delta_fft = (ratio_fft / (0.00366/0.99634)-1)*1000)
+}
+
+data_raw = data_raw %>%
+  # convert ratio to "%" ratio and for psm
+  mutate(ratio_fft = ratio_fft * 100,
+          ratio_na = ratio_na * 100,
+          psm_neutrons = psm_neutrons * 100)
+
+spectra_load = nrow(data_raw)
+print(sprintf("Loaded %d spectra from file(s)", nrow(data_raw)))
+
+```
+
+Optional: Fix the bin name, if wrong delimiter was used and all bins was shown as "unbinned" and all flag_peptide_assigned_to_multiple_bins == FALSE
+```{r}
+data_raw = data_raw %>%
+  mutate(bins = str_extract(proteins, "\\w+|"), flag_peptide_assigned_to_multiple_bins = !is.na(str_extract(proteins, " \\w+")), proteins_old = proteins, proteins = str_extract(proteins, "(?<=\\|)\\S+"))
+
+```
+Additional: For 15N data, fix a typo in ms_run, from "...AB1..." to "...A61..."
+```{r}
+if (la == "N") {
+  data_raw = data_raw %>%
+    mutate(ms_run = str_replace(ms_run, "AB1", "A61"))
+}
+```
+
+Save a copy of raw data
+```{r}
+# save a copy of raw data
+write_csv(data_raw, str_c(outroot, "calisp_out_raw.csv"))
+```
+
+### Wrangling
+
+#### 1. Remove crapped bins, filter out unwanted spectra ()
+Load saved raw data
+```{r}
+# Load from previously saved raw data
+data_raw = read_csv(str_c(outroot, "calisp_out_raw.csv"))
+spectra_load = nrow(data_raw)
+print(sprintf("Loaded %d spectra from file(s)", nrow(data_raw)))
+```
+
+```{r}
+if (is.na(spectra_filter)) {
+  data = data_raw %>%
+    filter((!grepl("crap", bins, ignore.case = TRUE)) &
+           (flag_peak_at_minus_one_pos == FALSE) &
+           (flag_spectrum_is_wobbly == FALSE) &
+           (flag_psm_has_low_confidence == FALSE) &
+           (flag_psm_is_ambiguous == FALSE) &
+           (flag_spectrum_is_contaminated == FALSE))
+} else if (spectra_filter == "fft") {
+  data = data_raw %>%
+    filter((!grepl("crap", bins, ignore.case = TRUE)) &
+           (error_fft < spectra_filter_threshold))
+} else if (spectra_filter == "clumpy") {
+  data = data_raw %>%
+    filter((!grepl("crap", bins, ignore.case = TRUE)) &
+           (error_clumpy < spectra_filter_threshold))
+}
+
+print(sprintf(" %d spectra (%.1f%%) remaining after filters.", nrow(data), nrow(data)/spectra_load*100))
+
+```
+Filter out entries that doesn't fit iso limit
+
+```{r}
+data = data %>%
+  filter(ratio_na < isolim)
+print(sprintf(" %d spectra (%.1f%%) remaining after filters.", nrow(data), nrow(data)/spectra_load*100))
+```
+
+#### 2. Discard colums that no longer needed
+```{r}
+data = data %>%
+  select(ms_run, bins, proteins, peptide, pattern_total_intensity, ratio_na, ratio_fft, error_fft, delta_na, delta_fft, flag_peptide_assigned_to_multiple_bins)
+
+print(sprintf(" %d colums left, they are:", ncol(data)))
+print(names(data))
+
+```
+
+#### 3. Extract experiment info from ms_run
+
+For example:
+
+    - "Run7_EXPA7_B01_1700ng" -> exp = Blank, control = TRUE, time = 0, rep = 1
+    - "Run7_EXPA7_C01_1700ngt" -> exp = Carbon, control = FALSE, time = 0, rep = 1
+    - "Run8_EXPA7_TI2_1700ng" -> exp = Initial, control = TRUE, time = 0, rep = 2
+    - "Run8_EXPA7_A01_1700ng" -> exp = Amo, control = FALSE, time = 0, rep = 1
+
+```{r}
+data = data %>%
+  mutate(exp = str_extract(ms_run, "(?<=_)[:upper:][I0-9]\\d(?=_)") )%>%
+  mutate(time = ifelse(str_sub(exp, 2,2) == "I", as.integer(0), as.integer(str_sub(exp, 2,2))),
+          exp = str_sub(exp,1,1)) %>%
+  mutate(control = ifelse(exp %in% c("B","T"), TRUE, FALSE)) %>%
+  mutate(exp = ifelse(exp == "B", "Blank", 
+          ifelse(exp == "C", "Carbon", 
+            ifelse(exp == "T", "Initial", 
+              ifelse(exp == "N", "N2",
+                ifelse(exp == "U", "Urea",
+                  ifelse(exp == "A", "Ammo", exp))))))) %>%
+  mutate(sample_ID = str_extract(ms_run, "(?<=EXPA7_)\\w{3}(?=_)"))
+
+```
+
+#### 4. Add incubation hours
+
+The sampling collection point (time) to incubation hours (hours) relationship is written in the irms file.
+
+time initial is assigned as 0
+```{r}
+timetable <- read_csv(irmsfile) %>%
+  summarise(.by = c(Time, Hours)) %>%
+  transmute(time = as.integer(Time), hour = as.numeric(Hours)) %>%
+  na.omit()
+
+data_all <- inner_join(x = data, y = timetable, by = "time")
+```
+#### 5. Assign peptides that mapped to a cluster of multiple proteins and bins
+
+Here I prepare the Calis-p data in two ways:
+  1. Same filtering criteria as the one used to plot peptide ratio (data_unique)
+  2. Keep the peptides that maps to multiple bins, since this does not impact the bulk analysis on sample level (data_all)
+
+```{r}
+data_unique = data_all %>%
+  filter(flag_peptide_assigned_to_multiple_bins == FALSE)
+
+print(sprintf(" %d spectra (%.1f%%) remaining after filters.", nrow(data_unique), nrow(data_unique)/spectra_load*100))
+```
+#### 6. Add taxomonic annotation to bins in data_unique 
+```{r}
+# data_unique = read_csv(str_c(outroot, "calisp_out_unique_peptides.csv"))
+# load taxo reference
+sodataxo = read_csv(sodataxo_dir)
+
+# Add short name and taxo info to bins, unbinned are marked as "unbinned" in taxo
+data_taxo <- sodataxo %>%
+  select(bins = bin_ID, phylum, short_name, taxonomy) %>%
+  left_join(data_unique,., by = "bins") %>%
+  mutate(taxonomy = ifelse(grepl("unbinned", bins), "unbinned", taxonomy),
+          phylum = ifelse(grepl("unbinned", bins), "unbinned", phylum),
+          short_name = ifelse(grepl("unbinned", bins), "unbinned", short_name))
+print(sprintf(" %d spectra (%.1f%%) remaining after filters.", nrow(data_taxo), nrow(data_taxo)/spectra_load*100))
+```
+
+#### Save a copy of wrangled data
+```{r}
+write_csv(data_all, str_c(outroot, "calisp_out_good_peptides.csv"))
+write_csv(data_unique, str_c(outroot, "calisp_out_unique_peptides.csv"))
+write_csv(data_taxo, str_c(outroot, "calisp_out_unique_peptides_bin_taxo.csv"))
+```

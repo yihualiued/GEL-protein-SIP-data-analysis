@@ -1,0 +1,599 @@
+---
+title: "Community composition and peptide ratio distribution"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+Part 2 of the GEL Calis-p sip data analysis. R markdown using wrangeled calisp.py output. Wrangeling by upstream "GEL_sip_anal_1_raw_wrangling_yl.Rmd" gathers raw binary ".feather" data, cleaned the table and exported to a summerised ".csv". 
+
+Aims of this second part of the analysis is to investigate the data and plot the C isotope distribution of peptides over time
+
+## Load libraries and basic settings
+
+Setup working directory
+```{r setup, include=FALSE}
+# setup chuck to make working directory set for all chunks
+wd = "/yihualiu/mscalisp/"
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = wd)
+```
+
+Load libraries
+
+```{r}
+library("tidyverse")
+library("stringr")
+library("ggplot2")
+library("tidyr")
+library("dplyr")
+library("readr")
+library("forcats")
+library("tidytable")
+library("RColorBrewer")
+library("Hmisc")
+```
+
+
+## Input Parameters
+First choice from N (15N) and C (13C), and also load taxo ref
+
+The input wrangeled files for 13C are in "./GEL_C/wrangeled_output", for 15N are in "./GEL_N/wrangeled_output"
+```{r}
+la = "C"                                              # specify the isotope label, "C" for 13C and "N" for 15N # nolint
+# la = "N"
+binls = c("bin25_GEM2", "bin31_GEM2", "bin17_LCM1")   # specify the bins to address when visualizing peptide isotope ratio distribution # nolint
+sampsub = "Cyanobacteriota"                           # specify the GTDB PHYLUM to highlight as a subgroup when reporting the isotope ratio of each sample.(Will be reported as the isootpe ratio of selected phylum, other bins, and unbinned) # nolint
+
+sodataxo_dir = str_c(wd,"Soda lake MAGs short taxonomy.csv")   # directory of reference file with bin taxonomic annotation
+# irmsfile = str_c(wd,"2019_IRMS.csv")                  # specify the IRMS file name/directory # nolint
+#file.choose()
+
+```
+
+Generate the other variables depends on C or N
+
+```{r}
+# wrangeled calisp data dir
+  wrangeled_data_dir = str_c("GEL_",la,"/wrangled_output/")
+# output dir
+  outroot = str_c("GEL_",la,"/analysis_", Sys.Date(),"/")
+  dir.create(outroot)
+```
+
+## Import dataset
+
+```{r}
+data_taxo = read_csv(str_c(wrangeled_data_dir,"calisp_out_unique_peptides_bin_taxo.csv"))
+# sodataxo = read_csv(sodataxo_dir)
+```
+
+
+## Community composition
+Create an output directory for community composition analysis
+```{r} 
+dir.create(str_c(outroot,"community_composition"))
+out_compo = str_c(outroot,"community_composition/")
+```
+
+### summarise community composition  
+For each samples
+```{r}
+community_structure_all = data_taxo %>%
+  summarise(spectra_count = n(), sum_pattern_intensity = sum(pattern_total_intensity), .by = c(sample_ID ,bins, short_name, time, phylum, taxonomy)) %>%
+  arrange(.,desc(spectra_count))%>%
+  mutate(MAG_taxo = paste0(short_name,"-", taxonomy))
+write_csv(community_structure_all,str_c(out_compo,"community_structure_all_samples.csv"))
+community_structure_all
+```
+Summarized across samples
+```{r}
+community_structure_sum = data_taxo %>%
+  summarise(spectra_count = n(), sum_pattern_intensity = sum(pattern_total_intensity), .by = c(bins, short_name, time, phylum, taxonomy)) %>%
+  arrange(.,desc(spectra_count))%>%
+  mutate(MAG_taxo = paste0(short_name,"-", taxonomy))
+write_csv(community_structure_all,str_c(out_compo,"community_structure_sum.csv"))
+community_structure_sum
+```
+
+Top 10 bins across all samples (do not include unbinned)  
+Note: this is the 10 most abundant bins 
+```{r}
+t10bins = community_structure_sum %>%
+  summarise(spectra_count = sum(spectra_count), sum_pattern_intensity = sum(sum_pattern_intensity), .by = c("bins","short_name","phylum","taxonomy","MAG_taxo")) %>%
+  filter(short_name != "unbinned") %>%
+  arrange(desc(spectra_count)) %>%
+  slice(1:10) %>%
+  pull(bins)
+t10bins
+```
+
+### Plot calis-p based community structure
+Plot from T0 and TI
+#### Bar plots
+**Structure of each samples**
+1. With sum_pattern_intensity as abundance
+```{r}
+# y = sum_pattern_intensity
+community_structure_all %>%
+  filter(bins %in% t10bins) %>%
+  ggplot(aes(sample_ID, sum_pattern_intensity, fill = MAG_taxo))+
+    geom_bar(stat = "identity" ,position = "fill")+
+    xlab("Sample ID")+
+    ylab("Sum of pattern intensity")+
+    scale_fill_brewer(palette = "Paired")+
+    # scale_fill_manual(values = brewer.pal(10,"Set3"))
+    # add title
+    labs(title = str_c("Community structure, peptide pattern intensity as MAG abundance, ",la,"-labelled samples"))+
+    theme_minimal()+
+    theme(plot.title = element_text(size = 12), plot.title.position = "plot", axis.text.x = element_text(angle = 45),
+          panel.grid = element_blank())
+
+ggsave(str_c(out_compo,"BarPlot_all_samples_sum_pattern_intensity.svg"), device = svg, width = 10, height = 5, units = "in")
+ggsave(str_c(out_compo,"BarPlot_all_samples_sum_pattern_intensity.png"), device = png, width = 10, height = 5, units = "in")
+```
+2. With spectra_count as abundance
+```{r}
+# y = spectra_count
+community_structure_all %>%
+  filter(bins %in% t10bins) %>%
+  ggplot(aes(sample_ID, spectra_count, fill = MAG_taxo))+
+    geom_bar(stat = "identity" ,position = "fill")+
+    xlab("Sample ID")+
+    ylab("Number of spectray")+
+    scale_fill_brewer(palette = "Paired")+
+    labs(title = str_c("Community structure, MS spectra count as MAG abundance, ",la,"-labelled samples"))+
+    theme_minimal()+
+    theme(plot.title = element_text(size = 12), plot.title.position = "plot", axis.text.x = element_text(angle = 45),
+          panel.grid = element_blank())
+ggsave(str_c(out_compo,"BarPlot_all_samples_spectra_count.svg"), device = svg, width = 10, height = 5, units = "in")
+ggsave(str_c(out_compo,"BarPlot_all_samples_spectra_count.png"), device = png, width = 10, height = 5, units = "in")
+```
+**Community structure of T0 samples (time = 0)**
+1. With sum_pattern_intensity as abundance
+```{r} 
+# y = sum_pattern_intensity
+community_structure_all %>%
+  filter(time == 0 & bins %in% t10bins) %>%
+  ggplot(aes(sample_ID, sum_pattern_intensity, fill = MAG_taxo))+
+    geom_bar(stat = "identity" ,position = "fill")+
+    xlab("Sample ID")+
+    ylab("Sum of pattern intensity")+
+    scale_fill_brewer(palette = "Paired")+
+    labs(title = str_c("Community structure, peptide pattern intensity as MAG abundance, ",la,"-T0 & blank samples"))+
+    theme_minimal()+
+    theme(plot.title = element_text(size = 12), plot.title.position = "plot", axis.text.x = element_text(angle = 45),
+          panel.grid = element_blank())
+ggsave(str_c(out_compo,"BarPlot_T0_samples_sum_pattern_intensity.svg"), device = svg, width = 10, height = 5, units = "in")
+ggsave(str_c(out_compo,"BarPlot_T0_samples_sum_pattern_intensity.png"), device = png, width = 10, height = 5, units = "in")
+```
+
+2. With sum_pattern_intensity as spectra_count
+```{r}
+# y = spectra_count
+community_structure_all %>%
+  filter(time == 0 & bins %in% t10bins) %>%
+  ggplot(aes(sample_ID, spectra_count, fill = MAG_taxo))+
+    geom_bar(stat = "identity" ,position = "fill") +
+    xlab("Sample ID") +
+    ylab("Number of spectra")+
+    scale_fill_brewer(palette = "Paired")+
+    labs(title = str_c("Community structure, MS spectra count as MAG abundance, ",la,"-T0 & blank samples"))+
+    theme_minimal()+
+    theme(plot.title = element_text(size = 12), plot.title.position = "plot", axis.text.x = element_text(angle = 45),
+          panel.grid = element_blank())
+ggsave(str_c(out_compo,"BarPlot_T0_samples_spectra_count.svg"), device = svg, width = 10, height = 5, units = "in")
+ggsave(str_c(out_compo,"BarPlot_T0_samples_spectra_count.png"), device = png, width = 10, height = 5, units = "in")
+```
+
+**structure of the summarized community composition**
+```{r}
+community_structure_sum %>%
+  filter(bins %in% t10bins) %>%
+  pivot_longer(cols = c(sum_pattern_intensity, spectra_count), names_to = "MAG_abundance_from", values_to = "relative_abundance") %>%
+  ggplot(aes(MAG_abundance_from, relative_abundance , fill = MAG_taxo))+
+    geom_bar(stat = "identity" ,position = "fill")+
+    scale_fill_brewer(palette = "Paired")+
+    labs(title = str_c("Overall community structure across all ",la," labeled & blank samples"))+
+    theme_minimal()+
+    theme(plot.title = element_text(size = 12), plot.title.position = "plot",
+          panel.grid = element_blank())
+ggsave(str_c(out_compo,"BarPlot_summarised_samples.svg"), device = svg, width = 10, height = 5, units = "in")
+ggsave(str_c(out_compo,"BarPlot_summarised_samples.png"), device = png, width = 10, height = 5, units = "in")
+```
+
+**community structure at phylum level**
+```{r}
+community_structure_sum %>%
+  pivot_longer(cols = c(sum_pattern_intensity, spectra_count), names_to = "means_of_sum", values_to = "relative_abundance") %>%
+  ggplot(aes(means_of_sum, relative_abundance , fill = phylum))+
+  geom_bar(stat = "identity" ,position = "fill")+
+  labs(title = str_c("Phylum level community structure across all ",la," labeled & blank samples"))+
+  theme_minimal()+
+  theme(plot.title = element_text(size = 12), plot.title.position = "plot",
+          panel.grid = element_blank())
+ggsave(str_c(out_compo,"BarPlot_summarised_samples_all_bin_phylum.svg"), device = svg, width = 10, height = 5, units = "in")
+ggsave(str_c(out_compo,"BarPlot_summarised_samples_all_bin_phylum.png"), device = png, width = 10, height = 5, units = "in")
+```
+
+
+#### Bubble plots
+
+Make bubble plot showing the relative abundance of most abundant bins in T0 samples. 
+
+**Prepare data**
+```{r}
+bubble_data <- community_structure_all %>%
+  filter(time == 0, short_name != "unbinned") %>%
+  # Normalise the sum_pattern_intensity among all bins in each sample
+  mutate(sum_pattern_intensity_norm = sum_pattern_intensity/sum(sum_pattern_intensity),
+          spectra_count_norm = spectra_count/sum(spectra_count), .by = "sample_ID")
+
+# number of samples
+n_samples <- bubble_data %>%
+  pull(sample_ID) %>%
+  unique() %>%
+  length()
+
+# Filter out bins that has relative abundance >= 0.001.
+# 1. With normalised sum_pattern_intensity as relative abundance
+  bubble_data_SI <- bubble_data %>%
+  filter(sum_pattern_intensity_norm >= 0.001)
+  # Keep only bins that still present in all samples after filtering.
+  bin_occurence <- bubble_data_SI %>%
+    group_by(MAG_taxo) %>%
+    summarise(occurence = sum(sum_pattern_intensity_norm > 0)) %>%
+    filter(occurence == n_samples) %>%
+    pull(MAG_taxo)
+  bubble_data_SI <- bubble_data_SI %>%
+    filter(MAG_taxo %in% bin_occurence)%>%
+    # Reorder the MAG_taxo to plot on y axis from top to bottom alphabetically.
+    mutate(MAG_taxo = factor(MAG_taxo, levels = unique(MAG_taxo)[order(unique(MAG_taxo), decreasing = TRUE)]))
+# 2. With normalised spectra_count as relative abundance
+  bubble_data_SC <- bubble_data %>%
+  filter(spectra_count_norm >= 0.001)
+  # Keep only bins that still present in all samples after filtering.
+  bin_occurence <- bubble_data_SC %>%
+    group_by(MAG_taxo) %>%
+    summarise(occurence = sum(spectra_count_norm > 0)) %>%
+    filter(occurence == n_samples) %>%
+    pull(MAG_taxo)
+  bubble_data_SC <- bubble_data_SC %>%
+    filter(MAG_taxo %in% bin_occurence)%>%
+    # Reorder the MAG_taxo to plot on y axis from top to bottom alphabetically.
+    mutate(MAG_taxo = factor(MAG_taxo, levels = unique(MAG_taxo)[order(unique(MAG_taxo), decreasing = TRUE)]))
+
+# save the data
+write_csv(bubble_data, str_c(out_compo, "bubble_plot_data.csv"))
+write_csv(bubble_data_SI, str_c(out_compo, "bubble_plot_data_norm_intensity_filtered.csv"))
+write_csv(bubble_data_SC, str_c(out_compo, "bubble_plot_data_norm_count_filtered.csv"))
+```
+
+**Make bubble plot**
+```{r}
+# Plot with normalised sum_pattern_intensity as relative abundance, colour the bubbles by phylum
+bubble_data_SI %>%
+  ggplot(aes(x = sample_ID, y = MAG_taxo)) +
+  geom_count(aes(size = sum_pattern_intensity_norm, colour = phylum), alpha = 0.8)+
+    scale_size(range = c(0,15))+
+    guides(size = guide_legend("Relative abundance", size = c(1,2,5)))+
+    theme_classic() + 
+    xlab("Sample ID")+
+    ylab("MAGs")+
+    scale_color_brewer(palette = "Set1")
+# save the plot
+ggsave(str_c(out_compo,"BubblePlot_pattern_intensity_as_abundance.svg"), device = svg, width = 6, height = 5, units = "in")
+ggsave(str_c(out_compo,"BubblePlot_pattern_intensity_as_abundance.png"), device = png, width = 6, height = 5, units = "in")
+```
+
+```{r}
+# Plot with normalised spectra_count as relative abundance, colour the bubbles by phylum
+bubble_data_SC %>%
+  ggplot(aes(x = sample_ID, y = MAG_taxo)) +
+  geom_count(aes(size = spectra_count_norm, colour = phylum), alpha = 0.8)+
+    scale_size(range = c(0,15))+
+    guides(size = guide_legend("Relative abundance", size = c(1,2,5)))+
+    theme_classic() + 
+    xlab("Sample ID")+
+    ylab("MAGs")+
+    scale_color_brewer(palette = "Set1")
+# save the plot
+ggsave(str_c(out_compo,"BubblePlot_spectra_count_as_abundance.svg"), device = svg, width = 6, height = 5, units = "in")
+ggsave(str_c(out_compo,"BubblePlot_spectra_count_as_abundance.png"), device = png, width = 6, height = 5, units = "in")
+```
+
+
+## Peptide distribution at each time point (15/14N or 13C/12C ~ timepoint)
+### 1. peptide 13C/12C or 15N/14N
+Here we plot the neutron-abundance-model-estimated 13C/12C or 15N/14N for the three top populations as a function of time.
+
+Prepare dataset
+```{r}
+# Prepare dataset for peptide distribution box plots
+
+# create a directory for peptide distribution
+boxdir = str_c(outroot, "/peptide_distribution/")
+dir.create(boxdir)
+
+# Function to perform Wilcoxon test between a group and each control
+perform_wilcox_test <- function(exp_data, control_data) {
+  test_result <- wilcox.test(exp_data$ratio_na, control_data$ratio_na)
+  return(test_result$p.value)
+}
+
+# Function to perform Kruskal-Wallis test on the specified groups
+perform_kruskal_test <- function(all_data) {
+  test_result <- kruskal.test(ratio_na ~ control, data = all_data)
+  return(test_result$p.value)
+}
+
+# Prepare to perform statistical tests using the original data_taxo
+test_res <- data.frame()
+
+# Loop through each unique bin/taxonomy combination
+for (bin in unique(data_taxo$bins)) {
+  for (time in unique(data_taxo$time)) {
+    # Subsetting data from the original data_taxo
+    blank_data <- data_taxo %>% filter(bins == bin, time == time, exp == "Blank")
+    initial_data <- data_taxo %>% filter(bins == bin, time == 0, exp == "Initial")
+    combined_control_data <- data_taxo %>% filter(bins == bin, control == TRUE)
+    
+    for (exp_name in unique(data_taxo$exp)){
+      exp_data <- data_taxo %>% filter(bins == bin, time == time, exp == exp_name)
+    
+    # Initialize p-values
+    p_value_blank <- NA
+    p_value_initial <- NA
+    p_value_all_control <- NA
+
+    # Wilcox test vs Blank
+    if (nrow(blank_data) > 0 & nrow(exp_data) > 0) {
+      p_value_blank <- perform_wilcox_test(select(exp_data,ratio_na), select(blank_data,ratio_na))
+    }
+
+    # Wilcox test vs Initial
+    if (nrow(initial_data) > 0 & nrow(exp_data) > 0) {
+      p_value_initial <- perform_wilcox_test(select(exp_data,ratio_na), select(initial_data,ratio_na))
+    }
+
+    # Wilcox test vs all control (Blank + Initial)
+    if (nrow(combined_control_data) > 0 & nrow(exp_data) > 0) {
+      p_value_all_control <- perform_wilcox_test(select(exp_data,ratio_na), select(combined_control_data,ratio_na))
+    }
+
+    # Add results to test_res
+    test_res <- bind_rows(test_res, tibble(bins = bin,
+                                            exp = exp_name,
+                                            time = time, 
+                                            taxonomy = unique(exp_data$taxonomy),
+                                            control = FALSE,
+                                            exp_vs_blk_p_value = p_value_blank,
+                                            exp_vs_init_p_value = p_value_initial,
+                                            exp_vs_all_control_p_value = p_value_all_control))
+  
+    }  
+  }
+}
+
+# Add adjust p-values
+test_res_padj <- test_res %>%
+  mutate(adj_exp_vs_blk_p_value = p.adjust(exp_vs_blk_p_value, method = "BH"),
+         adj_exp_vs_init_p_value = p.adjust(exp_vs_init_p_value, method = "BH"),
+         adj_exp_vs_all_control_p_value = p.adjust(exp_vs_all_control_p_value, method = "BH"))
+```
+
+
+```{r}
+
+# Filter out the selected bins of interest and calculate values to plot
+weighted_box_stats = data_taxo %>%
+  select(bins, sample_ID, exp, time, hour, control, pattern_total_intensity, ratio_na, taxonomy) %>%
+  group_by(bins, exp, time,hour, taxonomy, control) %>%
+  summarise(minRo = min(ratio_na),
+            y25 = wtd.quantile(ratio_na, weights = pattern_total_intensity, probs = 0.25),
+            y50 = wtd.quantile(ratio_na, weights = pattern_total_intensity, probs = 0.5),
+            y75 = wtd.quantile(ratio_na, weights = pattern_total_intensity, probs = 0.75),
+            maxRo = max(ratio_na)) %>%
+  # Note: in geom_boxplot, ymin is not the min number of y, but  
+  #  "smallest observation greater than or equal to lower hinge (q1) - 1.5 * IQR"
+  # where IQR ( inter-quartile range) = q3-q1
+  # here instead, the following code use min of y or q1 - 1.5*IQR, whichever greater
+  # similarly, ymax = max of y or q3 + 1.5*IQR, whichever smaller
+  mutate(yIQR = y75 - y25) %>%
+  mutate(y0 = ifelse(y25 - 1.5 * yIQR > minRo, y25 - 1.5 * yIQR, minRo),
+         y100 = ifelse(y75 + 1.5 * yIQR < maxRo, y75 + 1.5 * yIQR, maxRo)) %>%
+  # join the quantile information with the stastics
+  left_join(., test_res_padj, by = c("bins", "exp", "time","taxonomy","control"))
+
+
+```
+
+```{r}
+unweighted_box_stats = data_taxo %>%
+  select(bins, sample_ID, exp, time, hour, control, ratio_na, taxonomy) %>%
+  group_by(bins, exp, time,hour, taxonomy, control) %>%
+  summarise(minRo = min(ratio_na),
+            y25 = wtd.quantile(ratio_na, probs = 0.25),
+            y50 = wtd.quantile(ratio_na, probs = 0.5),
+            y75 = wtd.quantile(ratio_na, probs = 0.75),
+            maxRo = max(ratio_na)) %>%
+  # Note: in geom_boxplot, ymin is not the min number of y, but  
+  #  "smallest observation greater than or equal to lower hinge (q1) - 1.5 * IQR"
+  # where IQR ( inter-quartile range) = q3-q1
+  # here instead, the following code use min of y or q1 - 1.5*IQR, whichever greater
+  # similarly, ymax = max of y or q3 + 1.5*IQR, whichever smaller
+  mutate(yIQR = y75 - y25) %>%
+  mutate(y0 = ifelse(y25 - 1.5 * yIQR > minRo, y25 - 1.5 * yIQR, minRo),
+         y100 = ifelse(y75 + 1.5 * yIQR < maxRo, y75 + 1.5 * yIQR, maxRo))%>%
+  # join the quantile information with the stastics
+  left_join(., test_res_padj, by = c("bins", "exp", "time","taxonomy","control"))
+
+# Export boxplot data 
+write.csv(weighted_box_stats, str_c(boxdir,la, "_weighted_stats_2019GEL_pro-SIP.csv"))
+write.csv(unweighted_box_stats, str_c(boxdir,la, "_unweighted_stats_2019GEL_pro-SIP.csv"))
+
+weighted_box_plot = filter(weighted_box_stats, bins %in% binls) %>%
+  # 2024-12-01 assign "Blank", time -1 and hour -1 to initial samples to fit in the same plot
+  mutate(hour = if_else(exp == "Initial", -1, hour)) %>%
+  mutate(time = if_else(exp == "Initial", -1, time)) %>%
+  mutate(exp = if_else(exp == "Initial", "Blank", exp))
+weighted_box_plot %>%
+write.csv(., str_c(boxdir,la, "_weighted_stats_plotted_2019GEL_pro-SIP.csv"))
+
+unweighted_box_plot = filter(unweighted_box_stats, bins %in% binls) %>%
+  mutate(hour = if_else(exp == "Initial", -1, hour)) %>%
+  mutate(time = if_else(exp == "Initial", -1, time)) %>%
+  mutate(exp = if_else(exp == "Initial", "Blank", exp)) 
+unweighted_box_plot %>%
+write.csv(., str_c(boxdir,la, "_unweighted_stats_plotted_2019GEL_pro-SIP.csv"))
+
+```
+
+Function to plot
+
+```{r}
+#test
+# stats = weighted_box_plot
+# weight = "IntWt"
+
+#creating individual box plots
+indiv_box = function(stats, weight){
+  for (i in binls) {
+  stats_i <- filter(stats, bins == i) %>%
+    mutate(hour = as.numeric(hour),
+           exp_color = ifelse(exp == "Blank" & hour == -1 & time == -1, "Initial", exp))  # New color variable
+  
+  # calculate the blank quantiles' average over time, as reference lines to show on the diagram
+  blk <- stats_i %>%
+    filter(control == TRUE)
+  
+  y25ave = mean(blk$y25)
+  y50ave = mean(blk$y50)
+  y75ave = mean(blk$y75)
+
+  # get taxo annotation
+  taxo_i = stats_i[1,]$taxonomy
+    
+  # plot
+  if (la == "C") {
+    stats_i %>% 
+    ggplot(., aes(hour, group = hour, fill = exp_color)) +
+    geom_boxplot(aes(x= hour, 
+                     ymin = y0, 
+                     lower = y25, middle = y50, upper = y75, ymax = y100 
+                     ), alpha = 0.8,
+                 stat = "identity")+
+    facet_grid(~exp)+
+    scale_fill_manual(values = c("Initial" = "#BEBEBE","Blank" = "#59a9eb", "Carbon" = "#25c450"))+
+    ylim(0.5, 1.5)+
+    ylab( str_c("Peptide 13C/12C (%) distribution"))+
+    theme_bw()+
+    #Add lines for the mean y75, mean y75 and mean y50 of blank, values were calculated externally
+    geom_hline(aes(yintercept = y75ave), linetype = 1, color = "#949494")+
+    geom_hline(aes(yintercept = y25ave), linetype = 1, color = "#949494")+
+    geom_hline(aes(yintercept = y50ave), linetype = 2, color = "#949494")+
+    labs(title = str_c(i," ", taxo_i, " ",weight," ",la," isotope distribution"), fill = "Experiment")
+    
+  } else {
+    stats_i %>% 
+      ggplot(., aes(hour, group = hour, fill = exp_color)) +
+      geom_boxplot(aes(x= hour, 
+                       ymin = y0, 
+                       lower = y25, middle = y50, upper = y75, ymax = y100 
+                       ), alpha = 0.8,
+                   stat = "identity")+
+      facet_grid(~exp)+
+      scale_fill_manual(values = c("Initial" = "#BEBEBE","Blank" = "#59a9eb", "Carbon" = "#25c450", "Ammo" = "#c2083c", "Urea" = "#ffcd00", "N2" = "#e0c4ad"))+
+      ylim(-1.5, 2)+
+      ylab( str_c(i, " Protein 15N/14N (%)"))+
+      theme_bw()+
+      #Add lines for the mean y75, mean y75 and mean y50 of blank, values were calculated externally
+      geom_hline(aes(yintercept = y75ave), linetype = 1, color = "#949494")+
+      geom_hline(aes(yintercept = y25ave), linetype = 1, color = "#949494")+
+      geom_hline(aes(yintercept = y50ave), linetype = 2, color = "#949494")+
+    labs(title = str_c(la,"_",weight,"_",i,"_",taxo_i), fill = "Experiment")
+  }
+
+  ggsave(str_c(boxdir,la,"_Boxplot_",weight,"_",taxo_i,"_2019GEL.pdf"), plot= last_plot(), device = "pdf", width = 8, height = 8.5, units = "in")
+  ggsave(str_c(boxdir,la,"_Boxplot_",weight,"_",taxo_i,"_2019GEL.png"), plot= last_plot(), device = "png", width = 8, height = 8.5, units = "in")
+
+} 
+}
+
+  
+```
+
+Ploting box plot
+```{r}
+indiv_box(weighted_box_plot, "Intensity_Weighted")
+indiv_box(unweighted_box_plot, "Unweighted")
+```
+The ploted data are (previously exported to file):
+```{r}
+filter(weighted_box_stats, bins %in% binls)
+filter(unweighted_box_stats, bins %in% binls)
+```
+
+### 2. peptide 13C/12C or 15N/14N difference between control and treatment group
+
+What if we calculate the change on a per-peptide basis from a baseline established by the control data...
+ This provides a way to look at the most reliable part of the data as well as eliminate intra-peptide noise 
+ by comparing the same peptides accross treatments and controls 
+ For each peptide at each timepoint in the treatments, we calculate the difference of the neutron-abundance
+ -estimated ratio from the base-line ratio in the controls (calculate the difference at each time point)
+ 
+```{r}
+# separate control and treatment data, then filter out non-shred peptides
+# control data
+c_spectra = filter(data_taxo, (control == 1)&(bins %in% binls))
+
+# unique peptides in control
+c_peptide_names = c_spectra %>%
+  summarise(.by = peptide)
+
+# treatment data
+spectra = filter(data_taxo, (control == 0)&(bins %in% binls)) %>%
+  # shared peptides
+  filter(., peptide %in% c_peptide_names$peptide)
+
+# Original: creating a peptide table with 'bin', 'time', 'peptide', 'c_#spectra', 'c_na_mean', 'c_na_stdev', 'bt_#spectra', 'bt_na_mean', 'bt_na_stdev'
+#  Instead, I use "ctrl" for control ("c"), "num" for #, "na-ratio" for "na", and removed "bt" for treatments
+#  Also, using medium instead of mean
+c_peptide_df <- c_spectra %>%
+  group_by(peptide, bins, time, hour, short_name, taxonomy) %>%
+  summarise(., ctrl_spectra_num = n(),
+            ctrl_na_ratio_mid = median(ratio_na),
+            ctrl_na_ratio_stdev = sd(ratio_na))
+
+peptide_df <- spectra %>%
+  select(peptide, bins, ratio_na, time, hour, short_name, taxonomy) %>%
+  group_by(peptide, bins, time, hour, short_name, taxonomy) %>%
+  summarise(., spectra_num = n(),
+            na_ratio_mid = median(ratio_na),
+            na_ratio_stdev = sd(ratio_na)) %>%
+  inner_join(., c_peptide_df, by = c("peptide", "bins", "time", "hour", "short_name", "taxonomy")) %>%
+  drop_na() %>%
+  mutate(na_ratio_diff = na_ratio_mid - ctrl_na_ratio_mid,
+          bintaxo = str_c(short_name, "_", taxonomy))  
+print(nrow(peptide_df))
+ 
+```
+Let's plot out the ratio difference of each peptide
+```{r}
+peptide_df %>%
+  ggplot() +
+  geom_boxplot(aes(x = hour, y = na_ratio_diff), outlier.shape = NA) +
+  geom_hline(yintercept = 0, color = "red", linetype = 5) +
+  facet_wrap(~ bintaxo) +
+  ylim(-0.35, 0.35) + 
+  theme_bw()+
+  theme(panel.grid.major = element_line(colour = NA),
+    panel.grid.minor = element_line(colour = NA),
+    panel.background = element_rect(fill = NA))
+```
+```{r}
+ ggsave(str_c(boxdir,la,"_na_ratio_diff__2019GEL.pdf"), plot= last_plot(), device = "pdf", width = 8, height = 6, units = "in")
+  ggsave(str_c(boxdir,la,"_na_ratio_diff__2019GEL.png"), plot= last_plot(), device = "png", width = 8, height = 6, units = "in")
+```
+
+
